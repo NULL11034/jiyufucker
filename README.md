@@ -1,4 +1,4 @@
-# jiyufucker
+# 极域(jiyu)电子教室 UDP 重放攻击工具
 
 [![GitHub stars](https://img.shields.io/github/stars/NULL11034/jiyufucker.svg?style=flat)](https://github.com/NULL11034/jiyufucker/stargazers)  
 [![GitHub downloads](https://img.shields.io/github/downloads/NULL11034/jiyufucker/total.svg?style=flat)](https://github.com/NULL11034/jiyufucker/releases)
