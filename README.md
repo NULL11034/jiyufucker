@@ -92,4 +92,16 @@
 ### 🇬🇧 English Notice:
 This project has been archived. Due to targeted sabotage and malicious interference from certain individuals (notably "Yuan Idiot"), active development has been halted.
 
+### ⚠️ 附加声明 / Additional Statement
+
+### 🇨🇳 中文：
+所谓的“袁白痴”本名疑似为“袁继平”。鉴于其恶意行为已对项目造成实质性破坏，特此声明，以正视听。希望所有开发者警惕此人，并保护自己的创作空间不受无端干扰。
+
+本声明仅为事件记录，不构成对其人身攻击，亦欢迎其自行澄清。
+
+### 🇬🇧 English:
+The individual referred to as “Yuan Idiot” is believed to be Yuan Jiping. Due to their malicious actions which directly damaged the project, this statement is made to clarify the situation.
+
+This is a factual record of events, not a personal attack. The individual is welcome to clarify their position if desired.
+
 To avoid further misunderstanding and trouble, the project is now suspended and archived. All code and past work will remain accessible for learning and reference purposes. A restart may be considered in the future.
