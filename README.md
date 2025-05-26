@@ -3,7 +3,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/NULL11034/jiyufucker.svg?style=flat)](https://github.com/NULL11034/jiyufucker/stargazers)  
 [![GitHub downloads](https://img.shields.io/github/downloads/NULL11034/jiyufucker/total.svg?style=flat)](https://github.com/NULL11034/jiyufucker/releases)
 
-**版本：1.3**  
+**版本：1.4**  
 **作者：NULL11034**
 
 ## 概述
