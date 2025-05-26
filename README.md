@@ -80,3 +80,16 @@
 ## 安全与免责声明
 
 本工具仅供授权测试和研究使用，严禁用于非法攻击。使用本工具攻击或未经授权控制他人计算机属于违法行为。作者对使用该工具造成的任何后果概不负责。请在合法环境下进行测试。
+
+
+## 🚫 项目状态 / Project Status
+
+### 🇨🇳 中文说明：
+本项目已进入存档状态。由于受到某些个人（尤其是袁白痴）的恶意干扰与陷害，开发工作无法继续推进。为了避免更大的误解和麻烦，决定暂停维护，归档处理。
+
+项目的全部代码和成果仍将保留供学习与参考，若将来时机成熟，不排除重新启动的可能。
+
+### 🇬🇧 English Notice:
+This project has been archived. Due to targeted sabotage and malicious interference from certain individuals (notably "Yuan Idiot"), active development has been halted.
+
+To avoid further misunderstanding and trouble, the project is now suspended and archived. All code and past work will remain accessible for learning and reference purposes. A restart may be considered in the future.
